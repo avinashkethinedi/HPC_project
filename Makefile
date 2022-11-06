@@ -1,6 +1,6 @@
 CFLAGS = -O3 -lm
 CC = gcc
-MCC = mpicc
+MCC = mpic++
 
 all: build
 
@@ -9,7 +9,7 @@ build: SpMV
 SpMV: SpMV.o
 	$(MCC) $(CFLAGS) $< -o $@
 
-SpMV.o: SpMV.c
+SpMV.o: SpMV.cpp
 	$(MCC) $(CFLAGS) $< -c -o $@
 
 clean:

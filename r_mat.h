@@ -19,19 +19,15 @@ long** block_allocation(int n, int m)
 		pe_blocks[i] = pe_blocks[0]+(size_t)i*m;
 	return pe_blocks;
 }
-long nnz_distribution(long**, int, int);
-long** calculate_prob_distribution(int mat_blocks, int rank, int npes, block *mat_prop)
+long calculate_nnz(long*, int);
+long* calculate_nnz_distribution(int rank, int npes, block *mat_prop)
 {
-	if(mat_blocks & (mat_blocks-1))
-	{
- 		printf("matrix blocks %ld isn't in powers of 2\n", mat_blocks);
- 		exit(1);
- 	}
-	long **pe_blocks = block_allocation(mat_blocks, mat_blocks);
+	long **pe_blocks = block_allocation(npes, npes);
 	int i, j, k, l, m, x, y;
-	int n=log2(mat_blocks);
-	for(i=0;i<mat_blocks;i++)
-		for(j=0;j<mat_blocks;j++)
+	int n=log2(npes);
+	//if(!rank) printf("n: %d\n", n);
+	for(i=0;i<npes;i++)
+		for(j=0;j<npes;j++)
 			pe_blocks[i][j] = mat_prop->nnz;
 	int num_blocks, grid_size, block_row, block_col, grid_row, grid_col;
 	float prob;
@@ -55,7 +51,7 @@ long** calculate_prob_distribution(int mat_blocks, int rank, int npes, block *ma
 						for(x=0;x<grid_size;x++)
 						{
 							for(y=0;y<grid_size;y++)
-								pe_blocks[grid_row+x][grid_col+y] = (long double)round(pe_blocks[grid_row+x][grid_col+y]*prob);
+								pe_blocks[grid_row+x][grid_col+y] = (long)round(pe_blocks[grid_row+x][grid_col+y]*prob);
 								//pe_blocks[grid_row+x][grid_col+y] *= prob;
 						}
 					}
@@ -63,33 +59,20 @@ long** calculate_prob_distribution(int mat_blocks, int rank, int npes, block *ma
 			}
 		}
 	}
-	//if(!rank) nnz_distribution(pe_blocks, mat_blocks, mat_blocks);
-	n = mat_blocks/npes;
-	long **nnz_dist = block_allocation(n, mat_blocks);
-	size_t size = mat_blocks*n*sizeof(long);
-	memcpy(nnz_dist[0], pe_blocks[n*rank], size);
-	/*for(i=0;i<npes;i++)
-	{
-		if(rank == i)nnz_distribution(nnz_dist, n, mat_blocks);
-		MPI_Barrier(MPI_COMM_WORLD);
-	}*/
+	long *nnz_dist = (long*)malloc(sizeof(long)*npes);
+	memcpy(nnz_dist, pe_blocks[rank], (size_t)npes*sizeof(long));
 	free(pe_blocks[0]);
 	free(pe_blocks);
 	return nnz_dist;
 }
-long nnz_distribution(long **pe_blocks, int n, int m)
+long calculate_nnz(long *nnz_dist, int n)
 {
-	int i, j;
+	int i;
 	long nnz=0;
 	for(i=0;i<n;i++)
 	{
-		//printf("PE: %d -> ", i);
-		for(j=0;j<m;j++)
-		{
-			//printf("%ld ", pe_blocks[i][j]);
-			nnz += pe_blocks[i][j];
-		}
-		//printf("\n");
+		//printf("%ld ", pe_blocks[i][j]);
+		nnz += nnz_dist[i];
 	}
 	//printf("nnz: (%ld)\n", nnz);
 	return nnz;
