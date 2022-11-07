@@ -10,9 +10,9 @@ void set_parameters(int, char**, int*, int*, block*, long*);
 int main(int argc, char* argv[])
 {
 	MPI_Init(&argc, &argv);
-	int scaling_factor = 15, edge_factor = 27;
+	int scaling_factor = 7, edge_factor = 27;
 	long mat_size, rows_per_pe, pe_nnz, nnz=0, *nnz_dist;
-	block mat_prob = {0.25, 0.25, 0.25, 0.25, 1};//{0.57, 0.19, 0.19, 0.05, 1, 1};
+	block mat_prob = {0.25, 0.25, 0.25, 0.25, 1};//{0.57, 0.19, 0.19, 0.05, 1};
 	set_parameters(argc, argv, &scaling_factor, &edge_factor, &mat_prob, &mat_size);
 	int rank, npes, mat_blocks;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -23,7 +23,11 @@ int main(int argc, char* argv[])
 	nnz_dist = calculate_nnz_distribution(rank, npes, &mat_prob);
 	pe_nnz = calculate_nnz(nnz_dist, npes);
 	//matrix creation
+	csr_data *csr_mat = create_matrix_data(nnz_dist, pe_nnz, rows_per_pe, npes, &mat_prob);
 	MPI_Reduce(&pe_nnz, &nnz, 1, MPI_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+	//free data
+	free(nnz_dist);
+	free(csr_mat);
 	MPI_Barrier(MPI_COMM_WORLD);
 	if(!rank)
 	{
@@ -31,7 +35,7 @@ int main(int argc, char* argv[])
 		printf("edge factor: %d (%0.3lf)\n", edge_factor, ((double)nnz/mat_size));
 		printf("probabilities: %0.3f, %0.3f, %0.3f, %0.3f\n", mat_prob.a, mat_prob.b, mat_prob.c, mat_prob.d);
 		printf("matrix size: %ld\n", mat_size);
-		printf("nnz: %ld (%ld)\n", nnz, nnz-mat_prob.nnz);
+		printf("nnz: %ld (%ld)\n", nnz, mat_prob.nnz);
 		printf("rows per PE: %ld\n", rows_per_pe);
 		printf("mat blocks: %d\n",mat_blocks);
 	}

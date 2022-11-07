@@ -1,15 +1,25 @@
+#pragma once
 #include<math.h>
+#include <algorithm>
 typedef struct block_probablity
 {
 	float a, b, c, d;
 	long nnz;
 }block;
-typedef struct compressed_sparse_row
+typedef struct EDGE
 {
-	int *row_ptr, *col_ptr, num_rows;
+	//edge from v to u with weight w
+	int v;
+	long u;
+	float w;
+}edge;
+typedef struct CSR_MATRIX
+{
+	int *row_ptr;
+	long *col_ptr;
 	float *val_ptr;
-	long nnz;
-}CSR;
+	long nnz, rows;
+}csr_data;
 long** block_allocation(int n, int m)
 {
 	size_t size = (size_t)n*m;
@@ -70,11 +80,125 @@ long calculate_nnz(long *nnz_dist, int n)
 	int i;
 	long nnz=0;
 	for(i=0;i<n;i++)
-	{
 		//printf("%ld ", pe_blocks[i][j]);
 		nnz += nnz_dist[i];
-	}
 	//printf("nnz: (%ld)\n", nnz);
 	return nnz;
 }
+void stochastic_Kronecker_grpah(edge *edge_array, long pe_nnz, long dim, long start_idx, float *prob, float *c_prob, int *row_nnz_count)
+{
+	int rank;
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	srand(start_idx+rank);
+	//srand(rank);
+	//printf("r: %d, %d\n", rank, rand());
+	long mat_dim, row, col, nnz_count=0;
+	int p_idx, prow, pcol, i, k;
+	float p;
+	k = log2(dim);
+	while(nnz_count < pe_nnz)
+	{
+		i=0;
+		mat_dim = dim;
+		row=0;
+		col=0;
+		while (i++<k)
+		{
+			p = (float)rand()/RAND_MAX;
+			p_idx = p<c_prob[0]?0:(p<c_prob[1]?1:(p<c_prob[2]?2:3));
+			prow = p_idx/2;
+			pcol = p_idx%2;
+			mat_dim/=2;
+			row = row + mat_dim*prow;//optimize with +=
+			col = col + mat_dim*pcol;
+		}
+		edge_array[nnz_count].v = row;
+		edge_array[nnz_count].u = start_idx+col;
+		edge_array[nnz_count++].w = p;
+		row_nnz_count[row]++;
+	}
+}
+//for validation
+void print_csr(csr_data *csr_mat)
+{
+	printf("rows: %ld, nnz: %ld\n", csr_mat->rows, csr_mat->nnz);
+	for(long i=0;i<csr_mat->rows;i++)
+	{
+		printf("%ld: ",i);
+		for(long j=csr_mat->row_ptr[i];j<csr_mat->row_ptr[i+1];j++)
+			printf("%ld ", csr_mat->col_ptr[j]);
+		printf("\n");
+	}
+}
+//for validation
+void validate_csr(csr_data *csr_mat)
+{
+	for(long i=0;i<csr_mat->rows;i++)
+		for(long j=csr_mat->row_ptr[i]+1;j<csr_mat->row_ptr[i+1];j++)
+			if(csr_mat->col_ptr[j] < csr_mat->col_ptr[j-1])
+			{
+				printf("data incorrect r:%ld, c:%ld\n", i, j);
+				return;
+			}
+	printf("data validated\n");
+}
+csr_data* create_csr_data(edge *edge_array, int *row_nnz_count, long pe_nnz, long rows_per_pe)
+{
+	size_t n = (size_t)sizeof(csr_data)+(rows_per_pe+1)*sizeof(int) + pe_nnz*(sizeof(long) + sizeof(float));
+	csr_data *csr_mat = (csr_data*)malloc(n);
+	csr_mat->nnz = pe_nnz;
+	csr_mat->rows = rows_per_pe;
+	long i, idx;
+	//printf("SIZE:%ld B %ld, %ld\n", n, rows_per_pe, pe_nnz);
+	if(csr_mat == NULL)
+	{
+		printf("csr memory allocation failed (%ld B)\n", n);
+		MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+	}
+	n = sizeof(csr_data);
+	csr_mat->row_ptr = (int*)((char*)csr_mat + n);
+	n+=((rows_per_pe+1)*sizeof(int));
+	csr_mat->col_ptr = (long*)((char*)csr_mat + n);
+	n+=(pe_nnz*sizeof(long));
+	csr_mat->val_ptr = (float*)((char*)csr_mat + n);
 
+	//row_ptr
+	csr_mat->row_ptr[0] = 0;
+	for(i=1;i<=rows_per_pe;i++)
+		csr_mat->row_ptr[i] = csr_mat->row_ptr[i-1] + row_nnz_count[i-1];
+	//printf("%ld, %d, %ld %ld\n", csr_mat->row_ptr[rows_per_pe-1], row_nnz_count[rows_per_pe-1], pe_nnz, csr_mat->row_ptr[rows_per_pe]);
+	for(i=0;i<pe_nnz;i++)
+	{
+		idx = edge_array[i].v;
+		row_nnz_count[idx]--;
+		idx = csr_mat->row_ptr[idx] + row_nnz_count[idx];
+		csr_mat->col_ptr[idx] = edge_array[i].u;
+		csr_mat->val_ptr[idx] = edge_array[i].w;
+	}
+	for(i=0;i<rows_per_pe;i++)
+		std::sort(&csr_mat->col_ptr[csr_mat->row_ptr[i]], &csr_mat->col_ptr[csr_mat->row_ptr[i+1]]);
+	return csr_mat;
+}
+csr_data* create_matrix_data(long *nnz_dist, long pe_nnz, long rows_per_pe, int npes, block *mat_prop)
+{
+	edge *edge_array = (edge*)malloc((size_t)pe_nnz*sizeof(edge));
+	int i, *row_nnz_count = (int*)calloc(rows_per_pe, sizeof(int));
+	csr_data *csr_mat;
+	long block_nnz, start_idx, idx = 0;
+	float prob[] = {0.45, 0.2, 0.2, 0.15}, c_prob[4];
+	c_prob[0] = prob[0];
+	for(i=1;i<4;i++)
+		c_prob[i] = prob[i] + c_prob[i-1];
+	for(i=0;i<npes;i++)
+	{
+		block_nnz = nnz_dist[npes-1-i];
+		start_idx = rows_per_pe*(npes-1-i);
+		stochastic_Kronecker_grpah(&edge_array[idx], block_nnz, rows_per_pe, start_idx, prob, c_prob, row_nnz_count);
+		idx += block_nnz;
+	}
+	csr_mat = create_csr_data(edge_array, row_nnz_count, pe_nnz, rows_per_pe);
+	//free data;
+	free(edge_array);
+	free(row_nnz_count);
+	return csr_mat;
+}
