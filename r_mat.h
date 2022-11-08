@@ -1,6 +1,6 @@
 #pragma once
 #include<math.h>
-#include <algorithm>
+#include<algorithm>
 typedef struct block_probablity
 {
 	float a, b, c, d;
@@ -20,6 +20,17 @@ typedef struct CSR_MATRIX
 	float *val_ptr;
 	long nnz, rows;
 }csr_data;
+typedef struct SpMV_DATA
+{
+	csr_data *csr_mat;
+	float *multi_vector;
+	float *result_vector;
+	long mat_size;
+}SpMV_data;
+typedef struct TIME
+{
+	double t, avg_t, min_t, max_t;
+}time_stats;
 long** block_allocation(int n, int m)
 {
 	size_t size = (size_t)n*m;
@@ -35,7 +46,6 @@ long* calculate_nnz_distribution(int rank, int npes, block *mat_prop)
 	long **pe_blocks = block_allocation(npes, npes);
 	int i, j, k, l, m, x, y;
 	int n=log2(npes);
-	//if(!rank) printf("n: %d\n", n);
 	for(i=0;i<npes;i++)
 		for(j=0;j<npes;j++)
 			pe_blocks[i][j] = mat_prop->nnz;
@@ -62,7 +72,6 @@ long* calculate_nnz_distribution(int rank, int npes, block *mat_prop)
 						{
 							for(y=0;y<grid_size;y++)
 								pe_blocks[grid_row+x][grid_col+y] = (long)round(pe_blocks[grid_row+x][grid_col+y]*prob);
-								//pe_blocks[grid_row+x][grid_col+y] *= prob;
 						}
 					}
 				}
@@ -90,8 +99,6 @@ void stochastic_Kronecker_grpah(edge *edge_array, long pe_nnz, long dim, long st
 	int rank;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	srand(start_idx+rank);
-	//srand(rank);
-	//printf("r: %d, %d\n", rank, rand());
 	long mat_dim, row, col, nnz_count=0;
 	int p_idx, prow, pcol, i, k;
 	float p;
@@ -149,7 +156,7 @@ csr_data* create_csr_data(edge *edge_array, int *row_nnz_count, long pe_nnz, lon
 	csr_mat->nnz = pe_nnz;
 	csr_mat->rows = rows_per_pe;
 	long i, idx;
-	//printf("SIZE:%ld B %ld, %ld\n", n, rows_per_pe, pe_nnz);
+	//printf("SIZE:%ld B", n);
 	if(csr_mat == NULL)
 	{
 		printf("csr memory allocation failed (%ld B)\n", n);
@@ -166,7 +173,6 @@ csr_data* create_csr_data(edge *edge_array, int *row_nnz_count, long pe_nnz, lon
 	csr_mat->row_ptr[0] = 0;
 	for(i=1;i<=rows_per_pe;i++)
 		csr_mat->row_ptr[i] = csr_mat->row_ptr[i-1] + row_nnz_count[i-1];
-	//printf("%ld, %d, %ld %ld\n", csr_mat->row_ptr[rows_per_pe-1], row_nnz_count[rows_per_pe-1], pe_nnz, csr_mat->row_ptr[rows_per_pe]);
 	for(i=0;i<pe_nnz;i++)
 	{
 		idx = edge_array[i].v;
@@ -179,13 +185,13 @@ csr_data* create_csr_data(edge *edge_array, int *row_nnz_count, long pe_nnz, lon
 		std::sort(&csr_mat->col_ptr[csr_mat->row_ptr[i]], &csr_mat->col_ptr[csr_mat->row_ptr[i+1]]);
 	return csr_mat;
 }
-csr_data* create_matrix_data(long *nnz_dist, long pe_nnz, long rows_per_pe, int npes, block *mat_prop)
+csr_data* create_matrix_data(long *nnz_dist, long pe_nnz, long rows_per_pe, int npes, block *mat_prob)
 {
 	edge *edge_array = (edge*)malloc((size_t)pe_nnz*sizeof(edge));
 	int i, *row_nnz_count = (int*)calloc(rows_per_pe, sizeof(int));
 	csr_data *csr_mat;
 	long block_nnz, start_idx, idx = 0;
-	float prob[] = {0.45, 0.2, 0.2, 0.15}, c_prob[4];
+	float prob[] = {mat_prob->a, mat_prob->b, mat_prob->c, mat_prob->d}, c_prob[4];
 	c_prob[0] = prob[0];
 	for(i=1;i<4;i++)
 		c_prob[i] = prob[i] + c_prob[i-1];
@@ -201,4 +207,24 @@ csr_data* create_matrix_data(long *nnz_dist, long pe_nnz, long rows_per_pe, int 
 	free(edge_array);
 	free(row_nnz_count);
 	return csr_mat;
+}
+void SpMV_kernek(SpMV_data *data)
+{
+	long i, j;
+	for(i=0;i<data->csr_mat->rows;i++)
+	{
+		data->result_vector[i] = 0;
+		for(j=data->csr_mat->row_ptr[i];i<data->csr_mat->row_ptr[i+1];i++)
+			data->result_vector[i] += data->csr_mat->val_ptr[j]*data->multi_vector[data->csr_mat->col_ptr[j]];
+	}
+}
+void iterative_SpMV(SpMV_data *data, int iterations)
+{
+	for(int i=0;i<iterations;i++)
+	{
+		SpMV_kernek(data);
+		float *temp = data->multi_vector;
+		data->multi_vector = data->result_vector;
+		data->result_vector = temp;
+	}
 }
