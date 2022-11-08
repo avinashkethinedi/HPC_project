@@ -208,7 +208,7 @@ csr_data* create_matrix_data(long *nnz_dist, long pe_nnz, long rows_per_pe, int 
 	free(row_nnz_count);
 	return csr_mat;
 }
-void SpMV_kernek(SpMV_data *data)
+void SpMV_kernel(SpMV_data *data)
 {
 	long i, j;
 	for(i=0;i<data->csr_mat->rows;i++)
@@ -222,7 +222,9 @@ void iterative_SpMV(SpMV_data *data, int iterations)
 {
 	for(int i=0;i<iterations;i++)
 	{
-		SpMV_kernek(data);
+		SpMV_kernel(data);
+		//TODO: compress and broadcast
+		//TODO: check accuracy
 		float *temp = data->multi_vector;
 		data->multi_vector = data->result_vector;
 		data->result_vector = temp;
