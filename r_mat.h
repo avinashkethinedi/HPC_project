@@ -1,4 +1,5 @@
 #pragma once
+#include<mpi.h>
 #include<math.h>
 #include<algorithm>
 typedef struct block_probablity
@@ -69,10 +70,8 @@ long* calculate_nnz_distribution(int rank, int npes, block *mat_prop)
 						grid_col = block_col+grid_size*m;
 						prob = l?(m?mat_prop->d:mat_prop->c):(m?mat_prop->b:mat_prop->a);
 						for(x=0;x<grid_size;x++)
-						{
 							for(y=0;y<grid_size;y++)
 								pe_blocks[grid_row+x][grid_col+y] = (long)round(pe_blocks[grid_row+x][grid_col+y]*prob);
-						}
 					}
 				}
 			}
@@ -94,6 +93,7 @@ long calculate_nnz(long *nnz_dist, int n)
 	//printf("nnz: (%ld)\n", nnz);
 	return nnz;
 }
+//edgelist generation based on r-mat probabilities using stochastic Kronecker algorithm
 void stochastic_Kronecker_grpah(edge *edge_array, long pe_nnz, long dim, long start_idx, float *prob, float *c_prob, int *row_nnz_count)
 {
 	int rank;
@@ -121,7 +121,7 @@ void stochastic_Kronecker_grpah(edge *edge_array, long pe_nnz, long dim, long st
 		}
 		edge_array[nnz_count].v = row;
 		edge_array[nnz_count].u = start_idx+col;
-		edge_array[nnz_count++].w = p;
+		edge_array[nnz_count++].w = p/10;
 		row_nnz_count[row]++;
 	}
 }
@@ -156,7 +156,6 @@ csr_data* create_csr_data(edge *edge_array, int *row_nnz_count, long pe_nnz, lon
 	csr_mat->nnz = pe_nnz;
 	csr_mat->rows = rows_per_pe;
 	long i, idx;
-	//printf("SIZE:%ld B", n);
 	if(csr_mat == NULL)
 	{
 		printf("csr memory allocation failed (%ld B)\n", n);
@@ -208,25 +207,44 @@ csr_data* create_matrix_data(long *nnz_dist, long pe_nnz, long rows_per_pe, int 
 	free(row_nnz_count);
 	return csr_mat;
 }
-void SpMV_kernel(SpMV_data *data)
+void SpMV_kernel(SpMV_data *data, int rank, MPI_Win window)
 {
 	long i, j;
+	int *row_ptr = data->csr_mat->row_ptr;
+	long *col_ptr = data->csr_mat->col_ptr;
+	float *val_ptr = data->csr_mat->val_ptr,
+		*multi_vector = data->multi_vector,
+		*result_vector = data->result_vector;
+	MPI_Aint start_idx = data->csr_mat->rows*rank;
 	for(i=0;i<data->csr_mat->rows;i++)
 	{
-		data->result_vector[i] = 0;
-		for(j=data->csr_mat->row_ptr[i];i<data->csr_mat->row_ptr[i+1];i++)
-			data->result_vector[i] += data->csr_mat->val_ptr[j]*data->multi_vector[data->csr_mat->col_ptr[j]];
+		result_vector[i] = 0;
+		for(j=row_ptr[i];j<row_ptr[i+1];j++)
+			result_vector[i] += val_ptr[j]*multi_vector[col_ptr[j]];
+			//if(rank==0) printf("r:%d c:%ld v:%f mv:%f rv:%f\n", i, col_ptr[j], val_ptr[j], multi_vector[col_ptr[j]], result_vector[i]);
+		if(rank) MPI_Put(&result_vector[i], 1, MPI_FLOAT, 0, start_idx+i, 1, MPI_FLOAT, window);
 	}
+	MPI_Win_fence(0, window);
 }
-void iterative_SpMV(SpMV_data *data, int iterations)
+void iterative_SpMV(SpMV_data *data, int iterations, int rank, int npes)
 {
+	MPI_Win window[2];
+	MPI_Win_create(data->result_vector, data->mat_size*sizeof(float), sizeof(float), MPI_INFO_NULL, MPI_COMM_WORLD, &window[0]);
+	MPI_Win_create(data->multi_vector, data->mat_size*sizeof(float), sizeof(float), MPI_INFO_NULL, MPI_COMM_WORLD, &window[1]);
+	MPI_Win_fence(0, window[0]);
+	MPI_Win_fence(0, window[1]);
 	for(int i=0;i<iterations;i++)
 	{
-		SpMV_kernel(data);
+		SpMV_kernel(data, rank, window[i%2]);
 		//TODO: compress and broadcast
-		//TODO: check accuracy
+		//TODO: broadcast the compressed data
+		MPI_Bcast(data->result_vector, data->mat_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
+		//TODO: Decompress data
 		float *temp = data->multi_vector;
 		data->multi_vector = data->result_vector;
 		data->result_vector = temp;
 	}
+	MPI_Win_free(&window[0]);
+	MPI_Win_free(&window[1]);
+	MPI_Barrier(MPI_COMM_WORLD);
 }

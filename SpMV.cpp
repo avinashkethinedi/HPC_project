@@ -3,14 +3,13 @@
 #include<stdlib.h>
 #include<string.h>
 #include<unistd.h>
-#include<mpi.h>
 #include"r_mat.h"
-void print_help();
+void print_help(char);
 void set_parameters(int, char**, int*, int*, block*, long*, int*);
 int main(int argc, char* argv[])
 {
 	MPI_Init(&argc, &argv);
-	int scaling_factor = 7, edge_factor = 27, iterations = 10;
+	int scaling_factor = 15, edge_factor = 27, iterations = 10;
 	long mat_size, rows_per_pe, pe_nnz, nnz=0, *nnz_dist;
 	time_stats graph_time = {0, 0, 0, 0}, SpMV_time = {0, 0, 0, 0};
 	block mat_prob = {0.25, 0.25, 0.25, 0.25, 1};
@@ -30,18 +29,20 @@ int main(int argc, char* argv[])
 	//SpMV kernel
 	SpMV_data data;
 	data.csr_mat = csr_mat;
-	data.multi_vector = (float*)malloc(mat_size*2*sizeof(float));
-	data.result_vector = &data.multi_vector[mat_size];
-	//initilise multiplication vector
-	for(long i=0;i<mat_size;i++) data.multi_vector[i] = rand()/RAND_MAX;
+	data.mat_size = mat_size;
+	data.multi_vector = (float*)calloc(mat_size, sizeof(float));
+	data.result_vector = (float*)calloc(mat_size, sizeof(float));
+	//initialise multiplication vector
+	for(long i=0;i<mat_size;i++) data.multi_vector[i] = ((float)rand()/RAND_MAX)/1e3;
 	//iterative SpMV
 	SpMV_time.t = MPI_Wtime();
-	iterative_SpMV(&data, iterations);
+	iterative_SpMV(&data, iterations, rank, npes);
 	SpMV_time.t = MPI_Wtime() - SpMV_time.t;
 	//free data
 	free(nnz_dist);
 	free(csr_mat);
 	free(data.multi_vector);
+	free(data.result_vector);
 	MPI_Barrier(MPI_COMM_WORLD);
 	//stats
 	MPI_Reduce(&pe_nnz, &nnz, 1, MPI_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
@@ -70,8 +71,14 @@ int main(int argc, char* argv[])
 	return EXIT_SUCCESS;
 }
 
-void print_help()
+void print_help(char ch)
 {
+	if(ch == 's') printf("invalid value for -s (it requires positive integer)\n");
+	if(ch == 'e') printf("invalid value for -e (it requires positive integer)\n");
+	if(ch == 'a') printf("invalid value for -a (it requires positive value [0,1])\n");
+	if(ch == 'b') printf("invalid value for -b (it requires positive value [0,1])\n");
+	if(ch == 'c') printf("invalid value for -c (it requires positive value [0,1])\n");
+	if(ch == 'i') printf("invalid value for -i (range 5 - 50)\n");
 	printf("scaling factor -s (15)\n");
 	printf("edge factor -e (20)\n");
 	printf("probability values: -a(0.57) -b(0.19) -c(0.19)\n");
@@ -88,80 +95,46 @@ void set_parameters(int argc, char **argv, int *scaling_factor, int *edge_factor
 		{
 			case 's':
 				*scaling_factor=atoi(optarg);
-				if(*scaling_factor < 1)
-				{
-					printf("invalid value for -s (it requires positive integer)\n");
-					print_help();
-				}
+				if(*scaling_factor < 1) print_help(opt);
 				break;
 			case 'e':
 				*edge_factor=atoi(optarg);
-				if(*edge_factor < 1)
-				{
-					printf("invalid value for -e (it requires positive integer)\n");
-					print_help();
-				}
+				if(*edge_factor < 1) print_help(opt);
 				break;
 			case 'a':
 				mat_prob->a = atof(optarg);
-				if(mat_prob->a > 1 || mat_prob->a < 0)
-				{
-					printf("invalid value for -a (it requires positive value [0,1])\n");
-					print_help();
-				}
+				if(mat_prob->a > 1 || mat_prob->a < 0) print_help(opt);
 				break;
 			case 'b':
 				mat_prob->b = atof(optarg);
-				if(mat_prob->b > 1 || mat_prob->b < 0)
-				{
-					printf("invalid value for -b (it requires positive value [0,1])\n");
-					print_help();
-				}
+				if(mat_prob->b > 1 || mat_prob->b < 0) print_help(opt);
 				break;
 			case 'c':
 				mat_prob->c = atof(optarg);
-				if(mat_prob->c > 1 || mat_prob->c < 0)
-				{
-					printf("invalid value for -c (it requires positive value [0,1])\n");
-					print_help();
-				}
+				if(mat_prob->c > 1 || mat_prob->c < 0) print_help(opt);
 				break;
 			case 'i':
 				*iterations=atoi(optarg);
-				if(*iterations < 5 || *iterations > 50)
-				{
-					printf("invalid value for -i (range 5 - 50)\n");
-					print_help();
-				}
+				if(*iterations < 5 || *iterations > 50) print_help(opt);
 				break;
 			case 'h':
-				print_help();
+				print_help(opt);
 				break;
 			default:
-				if(optopt == 's')
-					*scaling_factor = 15;
-				else if(optopt == 'e')
-					*edge_factor = 14;
-				else if(optopt == 'a')
-					mat_prob->a = 0.25;
-				else if(optopt == 'b')
-					mat_prob->b = 0.25;
-				else if(optopt == 'c')
-					mat_prob->c = 0.25;
-				else if(optopt == 'i')
-					*iterations = 10;
-				else
-				{
-					print_help();
-					exit(1);
-				}
+				if(optopt == 's') *scaling_factor = 15;
+				else if(optopt == 'e') *edge_factor = 14;
+				else if(optopt == 'a') mat_prob->a = 0.25;
+				else if(optopt == 'b') mat_prob->b = 0.25;
+				else if(optopt == 'c') mat_prob->c = 0.25;
+				else if(optopt == 'i') *iterations = 10;
+				else print_help('h');
 		}
 	}
 	mat_prob->d = 1 - (mat_prob->a + mat_prob->b + mat_prob->c);
 	if(mat_prob->d > 1 || mat_prob->d < 0)
 	{
 		printf("sum of probabilities (a: %0.3f, b: %0.3f, c: %0.3f, d: %0.3f) != 1\n", mat_prob->a, mat_prob->b, mat_prob->c, mat_prob->d);
-		print_help();
+		print_help('h');
 	}
 	*mat_size = (long)1<<(*scaling_factor);
 	mat_prob->nnz = (*mat_size)*(*edge_factor);
